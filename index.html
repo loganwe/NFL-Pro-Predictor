@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>NFL Pro Predictor</title>
+  <link rel="icon"  type="image" href="https://upload.wikimedia.org/wikipedia/en/thumb/a/a2/National_Football_League_logo.svg/873px-National_Football_League_logo.svg.png">
+
+  <!-- Tailwind CSS (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body { -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+    img.team-logo { object-fit: contain; display:inline-block; }
+    .small-muted { color: #94a3b8; font-size: 0.85rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-slate-900 via-indigo-900 to-sky-900 text-white p-4">
+  <div class="max-w-6xl mx-auto space-y-6">
+
+    <header class="text-center pt-6">
+      <h1 class="text-3xl md:text-4xl font-extrabold">NFL Pro Predictor</h1>
+      <p class="text-slate-300 mt-1">Deterministic ensemble using every available stat from ESPN & nflfastR/nflverse. No randomness.</p>
+    </header>
+
+    <!-- Controls -->
+    <section class="grid gap-4 md:grid-cols-3">
+      <div class="bg-white/5 p-4 rounded-lg">
+        <h2 class="font-bold mb-2">Choose Teams</h2>
+        <label class="text-sm text-slate-300">Team 1</label>
+        <select id="team1" class="w-full p-2 bg-white/5 rounded mb-3"></select>
+
+        <label class="text-sm text-slate-300">Team 2</label>
+        <select id="team2" class="w-full p-2 bg-white/5 rounded mb-3"></select>
+
+        <div class="flex gap-2">
+          <button id="computeBtn" class="flex-1 bg-emerald-400 text-slate-900 font-bold p-2 rounded">Compute</button>
+          <button id="simulateBtn" class="flex-1 bg-indigo-500 text-white font-bold p-2 rounded disabled:opacity-50" disabled>Simulate</button>
+        </div>
+
+        <div class="mt-3 space-y-2 text-sm text-slate-300">
+          <div>nflverse data (optional): paste CSV/JSON release URL</div>
+          <input id="nflverseUrl" placeholder="https://github.com/.../stats_team_season_2024.csv" class="w-full p-2 bg-white/5 rounded mono" />
+          <button id="loadNflverse" class="w-full mt-2 bg-sky-500 p-2 rounded">Load nflverse URL</button>
+
+          <p class="small-muted mt-2">If automatic loading fails due to CORS, run the small proxy (instructions below).</p>
+        </div>
+      </div>
+
+      <!-- Prediction & donut -->
+      <div class="bg-white/6 p-4 rounded-lg md:col-span-2">
+        <div class="flex items-start justify-between">
+          <div>
+            <h3 class="font-bold text-lg">Prediction</h3>
+            <p id="subline" class="text-slate-300 text-sm mt-1">Select two teams to compute probabilities using all available stats.</p>
+          </div>
+
+          <div id="winnerBadge" class="hidden text-right">
+            <div id="winnerLogo" class="w-14 h-14 mx-auto bg-white/5 rounded-full overflow-hidden mb-1"></div>
+            <div id="winnerName" class="text-yellow-300 font-bold"></div>
+          </div>
+        </div>
+
+        <div class="mt-4 md:flex md:gap-4">
+          <div class="md:w-1/3 bg-white/5 rounded p-3 flex items-center justify-center">
+            <canvas id="probDonut" width="220" height="220"></canvas>
+          </div>
+
+          <div class="flex-1 mt-4 md:mt-0 bg-white/5 rounded p-3">
+            <div class="grid grid-cols-2 gap-3">
+              <div class="bg-white/6 p-3 rounded">
+                <div class="text-xs text-slate-300">Team 1</div>
+                <div id="t1name" class="font-bold"></div>
+                <div id="t1chance" class="text-2xl text-amber-300 font-extrabold"></div>
+                <div id="t1stats" class="text-xs text-slate-300 mt-2"></div>
+              </div>
+
+              <div class="bg-white/6 p-3 rounded">
+                <div class="text-xs text-slate-300">Team 2</div>
+                <div id="t2name" class="font-bold"></div>
+                <div id="t2chance" class="text-2xl text-amber-300 font-extrabold"></div>
+                <div id="t2stats" class="text-xs text-slate-300 mt-2"></div>
+              </div>
+            </div>
+
+            <div class="mt-3 text-sm text-slate-300">
+              <div id="confidence"></div>
+              <div id="modelNotes" class="mt-2 small-muted"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 bg-white/5 p-3 rounded">
+          <h4 class="font-bold text-sm mb-2">Model Components Used (examples)</h4>
+          <div id="usedComponents" class="text-xs text-slate-300"></div>
+        </div>
+
+        <div class="mt-4">
+          <h4 class="font-bold text-sm mb-2">ELO History (top teams)</h4>
+          <canvas id="eloChart" height="120"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Standings -->
+    <section class="bg-white/5 p-4 rounded-lg">
+      <h3 class="font-bold mb-3">Standings & Stat Snapshot</h3>
+      <div id="standingsGrid" class="grid gap-2"></div>
+    </section>
+
+    <footer class="text-slate-400 text-sm mt-4">
+      <p>Notes: This app attempts to load every stat available from ESPN team endpoints and combines it with nflverse (nflfastR) team-season data if you provide or allow fetching a release URL. If fields are missing, defaults are used. See the “Troubleshooting / Proxy” comments in the code if you hit CORS issues.</p>
+    </footer>
+  </div>
+
+  <script>
+  /************************************************************************
+   * Option B — ESPN + nflfastR (nflverse) combined deterministic predictor
+   * - Attempts to fetch ESPN team list + team detail endpoints (lots of stats)
+   * - Optionally merges in nflverse (nflfastR) team-season CSV/JSON when available
+   * - Normalizes dozens/hundreds of stats, computes a weighted ensemble
+   * - Deterministic softmax -> win probabilities
+   *
+   * Save file locally as nfl-pro-advanced.html. If you hit CORS on GitHub raw,
+   * either supply a CORS-friendly release URL or run a tiny proxy (instructions below).
+   ************************************************************************/
+
+  // ---------- UTIL / STATE ----------
+  const state = { teams: [], loadedNflverse: false, nflverseData: null, eloHistory: {} };
+  const team1Sel = document.getElementById('team1');
+  const team2Sel = document.getElementById('team2');
+  const computeBtn = document.getElementById('computeBtn');
+  const simulateBtn = document.getElementById('simulateBtn');
+  const loadNflverseBtn = document.getElementById('loadNflverse');
+  const nflverseUrlInput = document.getElementById('nflverseUrl');
+
+  const t1nameEl = document.getElementById('t1name');
+  const t2nameEl = document.getElementById('t2name');
+  const t1chanceEl = document.getElementById('t1chance');
+  const t2chanceEl = document.getElementById('t2chance');
+  const t1statsEl = document.getElementById('t1stats');
+  const t2statsEl = document.getElementById('t2stats');
+  const usedComponentsEl = document.getElementById('usedComponents');
+  const confidenceEl = document.getElementById('confidence');
+  const modelNotes = document.getElementById('modelNotes');
+  const standingsGrid = document.getElementById('standingsGrid');
+  const winnerBadge = document.getElementById('winnerBadge');
+  const winnerLogo = document.getElementById('winnerLogo');
+  const winnerName = document.getElementById('winnerName');
+
+  // Charts
+  let donutChart = null;
+  let eloChart = null;
+  const donutCtx = document.getElementById('probDonut').getContext('2d');
+  const eloCtx = document.getElementById('eloChart').getContext('2d');
+
+  // Basic helper functions
+  const toNum = (v, fallback = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const normalize = (v, min, max) => (max === min) ? 0.5 : clamp((v - min) / (max - min), 0, 1);
+
+  // Known nflverse release URL candidates — we'll try these common file paths automatically.
+  // NOTE: these may or may not be present for a given season; user can paste a direct release URL in the input.
+  const NFLVERSE_CANDIDATES = [
+    // Player & team CSV releases (patterns used in many reddit posts)
+    'https://github.com/nflverse/nflverse-data/releases/download/player_stats/stats_player_season_2024.csv',
+    'https://github.com/nflverse/nflverse-data/releases/download/player_stats/stats_player_week_2024.csv',
+    'https://github.com/nflverse/nflverse-data/releases/download/team_stats/stats_team_season_2024.csv',
+    'https://github.com/nflverse/nflverse-data/releases/download/team_stats/stats_team_week_2024.csv',
+    // older patterns
+    'https://raw.githubusercontent.com/nflverse/nflverse-data/master/data/stats_team_season_2024.csv',
+    'https://raw.githubusercontent.com/nflverse/nflverse-data/master/data/stats_team_season_2023.csv'
+  ];
+
+  // ---------- Model configuration ----------
+  const WEIGHTS = {
+    winPct: 0.20,
+    elo: 0.30,
+    pointDiff: 0.15,
+    yardsDiff: 0.08,
+    turnoverDiff: 0.06,
+    thirdDownDiff: 0.04,
+    redzoneDiff: 0.03,
+    explosiveRate: 0.03,
+    sos: 0.03,
+    offEff: 0.08,
+    defEff: 0.06
+  };
+  const ELO_MIN = 1200, ELO_MAX = 1800;
+
+  function initEloFromWinPct(winPct) {
+    return Math.round(ELO_MIN + winPct * (ELO_MAX - ELO_MIN));
+  }
+
+  function eloExpected(a, b) {
+    return 1 / (1 + Math.pow(10, (b - a) / 400));
+  }
+  function eloUpdate(a, b, scoredA, k = 20) {
+    const expA = eloExpected(a, b);
+    const expB = eloExpected(b, a);
+    const newA = a + k * (scoredA - expA);
+    const newB = b + k * ((1 - scoredA) - expB);
+    return [newA, newB];
+  }
+
+  // ---------- Fetch ESPN teams + details ----------
+  async function fetchEspnTeamsAndDetails() {
+    team1Sel.innerHTML = '<option>Loading…</option>';
+    team2Sel.innerHTML = '<option>Loading…</option>';
+    standingsGrid.innerHTML = '<div class="text-slate-400">Loading teams…</div>';
+
+    try {
+      const listRes = await fetch('https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams');
+      const listJson = await listRes.json();
+      const rawTeams = listJson?.sports?.[0]?.leagues?.[0]?.teams || [];
+      // build team detail promises
+      const detailPromises = rawTeams.map(async (rt) => {
+        const team = rt.team || {};
+        const id = String(team.id || team.abbreviation || team.name || Math.random().toString(36).slice(2));
+        const base = {
+          id, name: team.displayName || team.name || 'Unknown', shortName: team.abbreviation || '',
+          logo: team.logos?.[0]?.href || '', color: (team.color || '333333').replace('#',''),
+          rawEspn: team
+        };
+        // fetch team detail page (may include many stats)
+        try {
+          const dres = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${team.id}`);
+          const djson = await dres.json();
+          // Many fields: record, stats arrays, team.splits, roster, etc.
+          base.record = djson?.team?.record?.items?.[0]?.summary || base.record || 'N/A';
+          // Gather stats from likely places:
+          //  - djson.team.record.items[0].stats (season totals)
+          //  - djson.team.stats (some endpoints)
+          //  - djson.team.boxscore? (rare)
+          const recItem = djson?.team?.record?.items?.[0];
+          const srcStats = (recItem?.stats || djson?.team?.stats || []);
+          // helper to find stat by name (case-insensitive)
+          const find = (names) => {
+            const lower = names.map(s => s.toLowerCase());
+            return srcStats.find(s => lower.includes(String(s.name).toLowerCase()) || lower.includes(String(s.abbrev || '').toLowerCase()));
+          };
+
+          // parse lots of common stats if present
+          const winsStat = find(['wins','w']);
+          const lossesStat = find(['losses','l']);
+          base.wins = winsStat ? toNum(winsStat.value,0) : 0;
+          base.losses = lossesStat ? toNum(lossesStat.value,0) : 0;
+
+          const pf = find(['pointsfor','points','pf','pts']);
+          const pa = find(['pointsagainst','pointsallowed','pa']);
+          base.pointsFor = pf ? toNum(pf.value,0) : (djson?.team?.pointsFor || 0);
+          base.pointsAgainst = pa ? toNum(pa.value,0) : (djson?.team?.pointsAgainst || 0);
+          base.pointDiff = base.pointsFor - base.pointsAgainst;
+
+          // yards
+          const ydsFor = find(['yards','totalyards','yds']);
+          base.yardsFor = ydsFor ? toNum(ydsFor.value,0) : 0;
+          // turnovers / takeaways
+          const toStat = find(['turnovers']);
+          base.turnovers = toStat ? toNum(toStat.value,0) : 0;
+          const takeStat = find(['takeaways','oppturnovers','takeaways']);
+          base.takeaways = takeStat ? toNum(takeStat.value,0) : 0;
+
+          // more advanced: third down %, red zone %, explosive plays, sack numbers
+          const thirdConv = find(['thirddownconversions','thirddownpct','third down pct']);
+          base.thirdDownPct = thirdConv ? toNum(thirdConv.value,0) : null;
+          const redzone = find(['redzonepct','redzone']);
+          base.redzonePct = redzone ? toNum(redzone.value,0) : null;
+          const expPlays = find(['explosiveplayrate','explosiveplays','explosive']);
+          base.explosiveRate = expPlays ? toNum(expPlays.value,0) : null;
+          const sacks = find(['sacks']);
+          base.sacks = sacks ? toNum(sacks.value,0) : null;
+
+          // Offensive / defensive EPA-like fields may come from nflverse only, but ESPN may have efficiency metrics:
+          const offEff = find(['offeff','offensiveepa','offenseeff']);
+          const defEff = find(['defeff','defensiveepa','defenseeff']);
+          base.offEff = offEff ? toNum(offEff.value,0) : 0;
+          base.defEff = defEff ? toNum(defEff.value,0) : 0;
+
+          // strength of schedule if present
+          const sosCandidate = find(['strengthofschedule','sos']);
+          base.sos = sosCandidate ? (() => {
+            const v = toNum(sosCandidate.value, 0);
+            return v > 3 ? clamp(v/100,0,1) : clamp(v,0,1);
+          })() : 0.5;
+
+          // save raw stats array for later merging and feature extraction
+          base.espnStats = srcStats;
+        } catch (e) {
+          // ignore per-team failure
+          base.wins = base.wins || 0;
+          base.losses = base.losses || 0;
+          base.pointsFor = base.pointsFor || 0;
+          base.pointsAgainst = base.pointsAgainst || 0;
+          base.pointDiff = base.pointsFor - base.pointsAgainst;
+          base.sos = base.sos || 0.5;
+        }
+        // compute wp
+        base.wp = (base.wins + base.losses) ? base.wins / (base.wins + base.losses) : 0;
+        // initialize elo from winpct (will be replaced if nflverse provides ELO or if history updates)
+        base.eloInit = initEloFromWinPct(base.wp);
+        return base;
+      });
+
+      const details = await Promise.all(detailPromises);
+      // store in state (sort by wins)
+      state.teams = details.sort((a,b) => (b.wins - a.wins) || b.wp - a.wp || (b.name.localeCompare(a.name)));
+      // init elo history
+      state.teams.forEach(t => { state.eloHistory[t.id] = [Math.round(t.eloInit)]; });
+
+      populateSelectsAndStandings();
+    } catch (err) {
+      console.error('ESPN fetch failed', err);
+      standingsGrid.innerHTML = '<div class="text-red-400">Failed to load teams from ESPN.</div>';
+    }
+  }
+
+  function populateSelectsAndStandings() {
+    team1Sel.innerHTML = '<option value="">Select Team</option>';
+    team2Sel.innerHTML = '<option value="">Select Team</option>';
+    standingsGrid.innerHTML = '';
+
+    state.teams.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = `${t.name} (${t.wins}-${t.losses})`;
+      team1Sel.appendChild(opt.cloneNode(true));
+      team2Sel.appendChild(opt.cloneNode(true));
+
+      // standings card row
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-3 p-2 rounded hover:bg-white/2';
+      row.innerHTML = `
+        <div class="w-12">${t.logo ? `<img src="${t.logo}" alt="${t.name}" class="w-10 h-10 object-contain rounded">` : `<div class="w-10 h-10 bg-white/6 rounded"></div>`}</div>
+        <div class="flex-1 min-w-0">
+          <div class="flex justify-between items-center">
+            <div class="truncate">
+              <div class="font-bold">${t.name}</div>
+              <div class="text-xs text-slate-400">${t.shortName} • ${t.record || ''}</div>
+            </div>
+            <div class="text-right">
+              <div class="font-bold">${t.wins}-${t.losses}</div>
+              <div class="text-xs text-slate-400">ELO ${state.eloHistory[t.id][state.eloHistory[t.id].length-1]}</div>
+            </div>
+          </div>
+        </div>
+      `;
+      standingsGrid.appendChild(row);
+    });
+
+    initCharts();
+  }
+
+  // ---------- NFLVERSE (nflfastR) loading ----------
+  // We try a set of common release URLs automatically; user can supply a direct CSV/JSON url too.
+  async function tryLoadNflverseAutomatically() {
+    for (const url of NFLVERSE_CANDIDATES) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        const text = await r.text();
+        // assume CSV by default
+        const parsed = csvToArrayOfObjects(text);
+        if (parsed && parsed.length) {
+          mergeNflverseData(parsed);
+          return true;
+        }
+      } catch (e) {
+        // ignore and try next
+      }
+    }
+    return false;
+  }
+
+  // Convert a CSV (first line headers) to array of objects (simple)
+  function csvToArrayOfObjects(csvText) {
+    try {
+      const lines = csvText.trim().split(/\r?\n/);
+      if (lines.length < 2) return [];
+      const headers = lines[0].split(',').map(h => h.replace(/(^"|"$)/g,'').trim());
+      const arr = [];
+      for (let i=1;i<lines.length;i++){
+        const row = lines[i].split(',');
+        if (row.length < headers.length) continue;
+        const obj = {};
+        for (let j=0;j<headers.length;j++){
+          obj[headers[j]] = row[j] ? row[j].replace(/^"|"$/g,'') : '';
+        }
+        arr.push(obj);
+      }
+      return arr;
+    } catch (e) { return []; }
+  }
+
+  function mergeNflverseData(parsedArray) {
+    // common nflverse team-season files include columns like 'team_abbr','team','season','off_epa','def_epa','total_epa','success_rate', etc.
+    state.nflverseData = parsedArray;
+    state.loadedNflverse = true;
+
+    // map nflverse stats into our team objects where possible
+    for (const t of state.teams) {
+      // try to find by abbreviation or by team name
+      const candidate = parsedArray.find(r => {
+        const abbr = (r['team_abbr'] || r['team'] || r['team_name'] || '').toLowerCase();
+        return abbr && (abbr === (t.shortName || '').toLowerCase() || (r['team'] || '').toLowerCase() === t.name.toLowerCase());
+      });
+
+      if (candidate) {
+        // Map many potentially useful fields if present:
+        t.offEff = toNum(candidate['off_epa'], t.offEff || 0) || toNum(candidate['epa_offense'], t.offEff || 0);
+        t.defEff = toNum(candidate['def_epa'], t.defEff || 0) || toNum(candidate['epa_defense'], t.defEff || 0);
+        t.totalEPA = toNum(candidate['total_epa'], t.totalEPA || 0);
+        t.successRate = toNum(candidate['success_rate'], t.successRate || 0);
+        t.cpoe = toNum(candidate['cpoe'], t.cpoe || 0);
+        t.explosiveRate = toNum(candidate['explosive_rate'] || candidate['explosive_plays_rate'], t.explosiveRate || 0);
+        t.sos = toNum(candidate['sos'], t.sos || 0) || t.sos;
+        t.pointDiff = t.pointDiff || toNum(candidate['point_diff'] || candidate['pointdiff'] || 0);
+        t.yardsFor = t.yardsFor || toNum(candidate['yards_for'] || candidate['total_yards_for'] || 0);
+        // if nflverse has ELO (rare), use it, otherwise set initial ELO from winpct
+        const nflElo = toNum(candidate['elo'] || candidate['team_elo'] || 0, 0);
+        const baseElo = nflElo || initEloFromWinPct(t.wp || 0);
+        if (!state.eloHistory[t.id] || !state.eloHistory[t.id].length) state.eloHistory[t.id] = [Math.round(baseElo)];
+        else state.eloHistory[t.id][0] = Math.round(baseElo);
+      }
+    }
+    // re-render standings and charts
+    populateSelectsAndStandings();
+    modelNotes.textContent = 'nflverse data loaded and merged (when matches found).';
+  }
+
+  // Allow user to paste a direct nflverse CSV/JSON url
+  loadNflverseBtn.addEventListener('click', async () => {
+    const url = nflverseUrlInput.value.trim();
+    if (!url) { alert('Paste a direct CSV or JSON release URL from nflverse (nflverse-data GitHub releases), or use automatic attempts.'); return; }
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('Fetch failed: ' + r.status);
+      const contentType = r.headers.get('content-type') || '';
+      if (contentType.includes('application/json') || url.endsWith('.json')) {
+        const j = await r.json();
+        // If JSON is array of rows map directly
+        if (Array.isArray(j)) mergeNflverseData(j);
+        else {
+          // try to find array inside object
+          const arr = j.data || j.rows || Object.values(j).find(v => Array.isArray(v));
+          if (arr) mergeNflverseData(arr);
+          else throw new Error('JSON format not recognized');
+        }
+      } else {
+        const txt = await r.text();
+        const parsed = csvToArrayOfObjects(txt);
+        if (parsed && parsed.length) mergeNflverseData(parsed);
+        else throw new Error('CSV parse failed');
+      }
+    } catch (err) {
+      alert('Failed to load nflverse URL: ' + err.message + '\nCheck CORS or paste a raw GitHub release asset URL.');
+      console.error(err);
+    }
+  });
+
+  // Try automatic load of nflverse candidates — non-blocking (fire-and-forget)
+  (async () => {
+    const ok = await tryLoadNflverseAutomatically();
+    if (!ok) {
+      // no automatic nflverse loaded — user can paste URL
+      console.log('nflverse auto load did not find a release. You can paste a release URL from https://github.com/nflverse/nflverse-data/releases');
+    }
+  })();
+
+  // ---------- Feature extraction & model ----------
+  function extractManyFeatures(team) {
+    // For each team object, ensure these canonical features exist (with fallbacks/defaults)
+    return {
+      id: team.id,
+      name: team.name,
+      shortName: team.shortName,
+      wins: toNum(team.wins,0),
+      losses: toNum(team.losses,0),
+      wp: toNum(team.wp,0),
+      pointsFor: toNum(team.pointsFor,0),
+      pointsAgainst: toNum(team.pointsAgainst,0),
+      pointDiff: toNum(team.pointDiff, team.pointsFor - team.pointsAgainst || 0),
+      yardsFor: toNum(team.yardsFor,0),
+      turnovers: toNum(team.turnovers,0),
+      takeaways: toNum(team.takeaways,0),
+      thirdDownPct: toNum(team.thirdDownPct, 0),
+      redzonePct: toNum(team.redzonePct, 0),
+      explosiveRate: toNum(team.explosiveRate, 0),
+      sos: toNum(team.sos, 0.5),
+      offEff: toNum(team.offEff, 0),
+      defEff: toNum(team.defEff, 0),
+      totalEPA: toNum(team.totalEPA, 0),
+      cpoe: toNum(team.cpoe, 0),
+      record: team.record || 'N/A',
+      logo: team.logo || ''
+    };
+  }
+
+  function computeCompositeScore(feat, currentElo) {
+    // Normalize each feature using sensible ranges and apply weights
+    // Ranges chosen by domain knowledge; tweak as needed.
+    const winNorm = feat.wp; // already 0..1
+    const eloNorm = normalize(currentElo, ELO_MIN, ELO_MAX);
+    const pdNorm = normalize(feat.pointDiff, -150, 150);
+    const yardsNorm = normalize(feat.yardsFor, 2000, 7000); // season totals rough range
+    const turnoverNorm = normalize(-feat.turnovers, -40, 10); // fewer turnovers better => negate
+    const thirdNorm = normalize(feat.thirdDownPct, 0, 100);
+    const redzoneNorm = normalize(feat.redzonePct, 0, 100);
+    const expNorm = normalize(feat.explosiveRate, 0, 0.2); // explosive rate per play / per game scaled
+    const sosNorm = normalize(feat.sos, 0, 1);
+    const offNorm = normalize(feat.offEff, -30, 30);
+    const defNorm = normalize(-feat.defEff, -30, 30); // lower defEff better so negate
+
+    // Weighted linear combination + off/def micro-adjust
+    let score =
+      (winNorm * WEIGHTS.winPct) +
+      (eloNorm * WEIGHTS.elo) +
+      (pdNorm * WEIGHTS.pointDiff) +
+      (yardsNorm * WEIGHTS.yardsDiff) +
+      (turnoverNorm * WEIGHTS.turnoverDiff) +
+      ((thirdNorm - 0.5) * WEIGHTS.thirdDownDiff) +
+      ((redzoneNorm - 0.5) * WEIGHTS.redzoneDiff) +
+      (expNorm * WEIGHTS.explosiveRate) +
+      (sosNorm * WEIGHTS.sos) +
+      (offNorm * WEIGHTS.offEff) +
+      (defNorm * WEIGHTS.defEff);
+
+    // score is 0..~1+; we'll use softmax to convert to probability later
+    return {
+      score,
+      breakdown: { winNorm, eloNorm, pdNorm, yardsNorm, turnoverNorm, thirdNorm, redzoneNorm, expNorm, sosNorm, offNorm, defNorm }
+    };
+  }
+
+  function computeProbabilities(t1, t2) {
+    // current elos (most recent)
+    const e1 = state.eloHistory[t1.id] ? state.eloHistory[t1.id][state.eloHistory[t1.id].length-1] : initEloFromWinPct(t1.wp || 0);
+    const e2 = state.eloHistory[t2.id] ? state.eloHistory[t2.id][state.eloHistory[t2.id].length-1] : initEloFromWinPct(t2.wp || 0);
+
+    const f1 = extractManyFeatures(t1);
+    const f2 = extractManyFeatures(t2);
+
+    const s1 = computeCompositeScore(f1, e1);
+    const s2 = computeCompositeScore(f2, e2);
+
+    // softmax scaling factor (controls separation)
+    const SCALE = 7;
+    const exp1 = Math.exp(s1.score * SCALE);
+    const exp2 = Math.exp(s2.score * SCALE);
+    const p1 = exp1 / (exp1 + exp2);
+    const p2 = exp2 / (exp1 + exp2);
+
+    // Confidence roughly percent difference
+    const conf = Math.abs(p1 - p2) * 100;
+
+    return {
+      team1: { chance: +(p1 * 100).toFixed(1), breakdown: s1.breakdown, elo: Math.round(e1) },
+      team2: { chance: +(p2 * 100).toFixed(1), breakdown: s2.breakdown, elo: Math.round(e2) },
+      confidence: +conf.toFixed(1)
+    };
+  }
+
+  // ---------- UI: charts & update ----------
+  function initCharts() {
+    if (donutChart) donutChart.destroy();
+    donutChart = new Chart(donutCtx, {
+      type: 'doughnut',
+      data: { labels: ['Team1','Team2'], datasets:[{data:[50,50], backgroundColor:['#f6c34d','#60a5fa']}] },
+      options: { cutout: '60%', plugins:{legend:{display:false}} }
+    });
+    if (eloChart) eloChart.destroy();
+    eloChart = new Chart(eloCtx, { type: 'line', data:{labels:[], datasets:[]}, options:{plugins:{legend:{labels:{color:'#fff'}}}, scales:{x:{ticks:{color:'#cbd5e1'}}, y:{ticks:{color:'#cbd5e1'}}} } });
+    updateEloChart();
+  }
+
+  function updateEloChart() {
+    // show top 6 teams by current ELO
+    const sorted = [...state.teams].sort((a,b) => (state.eloHistory[b.id][state.eloHistory[b.id].length-1] || 1500) - (state.eloHistory[a.id][state.eloHistory[a.id].length-1] || 1500)).slice(0,6);
+    const maxLen = Math.max(...sorted.map(t => state.eloHistory[t.id].length));
+    const labels = Array.from({length:maxLen}, (_,i)=>'S'+i);
+    const datasets = sorted.map((t, i) => {
+      const hist = state.eloHistory[t.id] || [initEloFromWinPct(t.wp||0)];
+      const arr = Array.from({length:maxLen}, (_,i)=> hist[i] !== undefined ? hist[i] : hist[hist.length-1]);
+      const colors = ['#60a5fa','#f6c34d','#34d399','#fb7185','#a78bfa','#f97316'];
+      return { label: t.shortName||t.name, data: arr, borderColor: colors[i%colors.length], tension:0.25, fill:false };
+    });
+    eloChart.data.labels = labels;
+    eloChart.data.datasets = datasets;
+    eloChart.update();
+  }
+
+  function showPredictionUI(res, t1, t2) {
+    t1nameEl.textContent = t1.name;
+    t2nameEl.textContent = t2.name;
+    t1chanceEl.textContent = res.team1.chance + '%';
+    t2chanceEl.textContent = res.team2.chance + '%';
+    confidenceEl.textContent = 'Confidence: ' + res.confidence.toFixed(1) + '%';
+
+    // list used components (presented)
+    usedComponentsEl.innerHTML = `
+      Win% • ELO • PointDiff • Yards • Turnovers • ThirdDown% • RedZone% • ExplosiveRate • SOS • Off/Def Efficiency
+    `;
+
+    // small stat lines
+    t1statsEl.textContent = `ELO ${res.team1.elo} • Pts ${t1.pointsFor}/${t1.pointsAgainst} • PD ${t1.pointDiff}`;
+    t2statsEl.textContent = `ELO ${res.team2.elo} • Pts ${t2.pointsFor}/${t2.pointsAgainst} • PD ${t2.pointDiff}`;
+
+    // donut update
+    donutChart.data.datasets[0].data = [res.team1.chance, res.team2.chance];
+    donutChart.update();
+
+    // winner badge
+    const winner = res.team1.chance > res.team2.chance ? t1 : t2;
+    winnerBadge.classList.remove('hidden');
+    winnerName.textContent = winner.name;
+    winnerLogo.innerHTML = winner.logo ? `<img src="${winner.logo}" alt="" class="w-full h-full object-contain">` : '';
+
+    // enable simulate button
+    simulateBtn.disabled = false;
+  }
+
+  // ---------- Simulate (apply ELO update deterministically) ----------
+  function simulateMatch(t1, t2, k = 20) {
+    // deterministic winner = higher chance
+    const res = computeProbabilities(t1, t2);
+    const scoredA = res.team1.chance > res.team2.chance ? 1 : 0;
+    const aElo = state.eloHistory[t1.id][state.eloHistory[t1.id].length-1];
+    const bElo = state.eloHistory[t2.id][state.eloHistory[t2.id].length-1];
+    const [na, nb] = eloUpdate(aElo, bElo, scoredA, k);
+    state.eloHistory[t1.id].push(Math.round(na));
+    state.eloHistory[t2.id].push(Math.round(nb));
+    // update UI & chart
+    populateSelectsAndStandings();
+    updateEloChart();
+    return { na, nb, res };
+  }
+
+  // ---------- Event wiring ----------
+  computeBtn.addEventListener('click', () => {
+    const t1id = team1Sel.value, t2id = team2Sel.value;
+    if (!t1id || !t2id || t1id === t2id) { alert('Select two different teams'); return; }
+    const t1 = state.teams.find(x => x.id === t1id), t2 = state.teams.find(x => x.id === t2id);
+    const res = computeProbabilities(t1, t2);
+    showPredictionUI(res, t1, t2);
+    // save last prediction to simulate
+    state.lastPrediction = { t1id, t2id, res };
+  });
+
+  simulateBtn.addEventListener('click', () => {
+    if (!state.lastPrediction) { alert('Compute a prediction first'); return; }
+    const t1 = state.teams.find(x => x.id === state.lastPrediction.t1id);
+    const t2 = state.teams.find(x => x.id === state.lastPrediction.t2id);
+    simulateMatch(t1, t2, 20);
+    // recompute to show updated probabilities
+    const res2 = computeProbabilities(t1, t2);
+    showPredictionUI(res2, t1, t2);
+  });
+
+  // ---------- Startup ----------
+  async function boot() {
+    await fetchEspnTeamsAndDetails();
+    initCharts();
+  }
+  boot();
+
+  // ---------- small helper: allow CSV paste (for debugging) ----------
+  // If you want to paste a CSV into the input, clicking Load will parse it (we already wired a URL loader).
+  // ---------- End of main app ----------
+
+  </script>
+
+  <!--
+  TROUBLESHOOTING / PROXY (if you encounter CORS when loading nflverse GitHub release assets):
+
+  Option A: Use a simple Node proxy (run locally) — saves you from CORS:
+    1) Save this file as proxy.js
+       const express = require('express');
+       const fetch = (...args) => import('node-fetch').then(m => m.default(...args));
+       const app = require('express')();
+       app.get('/proxy', async (req, res) => {
+         const url = req.query.url;
+         if (!url) return res.status(400).send('url required');
+         const r = await fetch(url);
+         const t = await r.text();
+         res.set('Access-Control-Allow-Origin','*');
+         res.send(t);
+       });
+       app.listen(3000,()=>console.log('proxy on :3000'));
+    2) Call the nflverse release URL via:
+       http://localhost:3000/proxy?url=<encodeURIComponent(release-url)>
+    3) Paste that proxied URL into the nflverse input above.
+
+  Option B: Use a public CORS proxy (not recommended for production) like https://cors.bridged.cc/<url> or https://api.allorigins.win/raw?url=<url> — replace in the input.
+
+  Security note: do not expose API keys in browser code. This app uses public endpoints only.
+
+  -->
+
+</body>
+</html>
