@@ -16,6 +16,7 @@
     img.team-logo { object-fit: contain; display:inline-block; }
     .small-muted { color: #94a3b8; font-size: 0.85rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace; }
+    #loadNflverse,#nflverseUrl{ display: none;}
   </style>
 </head>
 <body class="min-h-screen bg-gradient-to-b from-slate-900 via-indigo-900 to-sky-900 text-white p-4">
@@ -23,8 +24,30 @@
 
     <header class="text-center pt-6">
       <h1 class="text-3xl md:text-4xl font-extrabold">NFL Pro Predictor</h1>
-      <p class="text-slate-300 mt-1">Deterministic ensemble using every available stat from ESPN & nflfastR/nflverse. No randomness.</p>
+      <!-- <p class="text-slate-300 mt-1">Deterministic ensemble using every available stat from ESPN & nflfastR/nflverse. No randomness.</p> -->
     </header>
+<section class="bg-white/5 p-4 rounded-lg mt-4">
+  <h3 class="font-bold mb-3">Schedule & Predictions</h3>
+
+  <div class="grid gap-3 md:grid-cols-3">
+    <div class="bg-white/5 p-3 rounded">
+      <label class="text-sm text-slate-300">Date (YYYY-MM-DD)</label>
+      <input id="schedDate" class="w-full p-2 bg-white/5 rounded mono" placeholder="2025-12-03" />
+      <div class="text-xs small-muted mt-1">Or leave empty and choose week below.</div>
+
+      <label class="text-sm text-slate-300 mt-3">Week (regular season)</label>
+      <input id="schedWeek" class="w-full p-2 bg-white/5 rounded mono" placeholder="14" />
+
+      <button id="loadScheduleBtn" class="w-full mt-3 bg-amber-400 text-slate-900 font-bold p-2 rounded">
+        Load schedule & predict
+      </button>
+    </div>
+
+    <div class="md:col-span-2 bg-white/5 p-3 rounded">
+      <div id="scheduleGrid" class="space-y-2"></div>
+    </div>
+  </div>
+</section>
 
     <!-- Controls -->
     <section class="grid gap-4 md:grid-cols-3">
@@ -42,11 +65,11 @@
         </div>
 
         <div class="mt-3 space-y-2 text-sm text-slate-300">
-          <div>nflverse data (optional): paste CSV/JSON release URL</div>
+          <!-- <div>nflverse data (optional): paste CSV/JSON release URL</div> -->
           <input id="nflverseUrl" placeholder="https://github.com/.../stats_team_season_2024.csv" class="w-full p-2 bg-white/5 rounded mono" />
           <button id="loadNflverse" class="w-full mt-2 bg-sky-500 p-2 rounded">Load nflverse URL</button>
 
-          <p class="small-muted mt-2">If automatic loading fails due to CORS, run the small proxy (instructions below).</p>
+          <!-- <p class="small-muted mt-2">If automatic loading fails Wdue to CORS, run the small proxy (instructions below).</p> -->
         </div>
       </div>
 
@@ -115,7 +138,7 @@
       <p>Notes: This app attempts to load every stat available from ESPN team endpoints and combines it with nflverse (nflfastR) team-season data if you provide or allow fetching a release URL. If fields are missing, defaults are used. See the “Troubleshooting / Proxy” comments in the code if you hit CORS issues.</p>
     </footer>
   </div>
-
+  
   <script>
   /************************************************************************
    * Option B — ESPN + nflfastR (nflverse) combined deterministic predictor
@@ -668,6 +691,193 @@
     initCharts();
   }
   boot();
+// ---------- Schedule: fetch from ESPN scoreboard and predict ----------
+const scheduleGrid = document.getElementById('scheduleGrid');
+const schedDateInput = document.getElementById('schedDate');
+const schedWeekInput = document.getElementById('schedWeek');
+const loadScheduleBtn = document.getElementById('loadScheduleBtn');
+
+// Build a quick team id map for fast lookup
+function buildTeamMap() {
+  const map = new Map();
+  for (const t of state.teams) {
+    // ESPN team.id is numeric string; we already store as string
+    map.set(String(t.id), t);
+
+    // Also map by abbreviation and displayName as fallbacks
+    if (t.shortName) map.set(t.shortName.toLowerCase(), t);
+    if (t.name) map.set(t.name.toLowerCase(), t);
+  }
+  return map;
+}
+
+// Fetch scoreboard by date or week
+async function fetchScoreboard({ date, week }) {
+  // Priority: date (YYYY-MM-DD). Otherwise week param.
+  let url;
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    // ESPN expects dates without dashes or with ?dates=YYYY-MM-DD; both work in practice
+    url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${date}`;
+  } else if (week && Number(week) > 0) {
+    url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?week=${Number(week)}`;
+  } else {
+    // default: current scoreboard
+    url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard`;
+  }
+
+  const r = await fetch(url);
+  const j = await r.json();
+  const events = j?.events || [];
+  return events.map(ev => {
+    const comp = ev?.competitions?.[0] || {};
+    const teams = (comp?.competitors || []).map(c => ({
+      id: String(c?.team?.id || ''),
+      abbr: c?.team?.abbreviation || '',
+      name: c?.team?.displayName || c?.team?.name || '',
+      logo: c?.team?.logo || '',
+      homeAway: c?.homeAway || '',
+      score: c?.score ? Number(c.score) : null
+    }));
+    return {
+      id: ev.id,
+      date: ev.date,
+      venue: comp?.venue?.fullName || '',
+      status: ev?.status?.type?.name || comp?.status?.type?.name || 'STATUS_SCHEDULED',
+      teams
+    };
+  });
+}
+
+// Predict a single matchup (2 teams) using your ensemble
+function predictMatchup(teamA, teamB) {
+  const res = computeProbabilities(teamA, teamB);
+  const winner = res.team1.chance > res.team2.chance ? { t: teamA, side: 'A', pct: res.team1.chance } : { t: teamB, side: 'B', pct: res.team2.chance };
+  return { res, winner };
+}
+
+// Render small feature breakdown bars (0..1)
+function featureBars(breakdown) {
+  // Pick a few most intuitive features
+  const items = [
+    { key: 'eloNorm', label: 'ELO' },
+    { key: 'winNorm', label: 'Win%' },
+    { key: 'pdNorm', label: 'Point diff' },
+    { key: 'offNorm', label: 'Off eff' },
+    { key: 'defNorm', label: 'Def eff' },
+  ];
+
+  return items.map(it => {
+    const v = breakdown[it.key] ?? 0;
+    const pct = Math.round(v * 100);
+    return `
+      <div class="flex items-center gap-2 text-xs">
+        <div class="w-20 text-slate-300">${it.label}</div>
+        <div class="flex-1 bg-white/10 rounded h-2 overflow-hidden">
+          <div class="bg-emerald-400 h-2" style="width:${pct}%"></div>
+        </div>
+        <div class="w-10 text-right text-slate-400">${pct}%</div>
+      </div>
+    `;
+  }).join('');
+}
+
+// Render schedule and predictions
+function renderSchedulePredictions(matchups, teamMap) {
+  if (!matchups.length) {
+    scheduleGrid.innerHTML = '<div class="text-slate-400">No events found for that date/week.</div>';
+    return;
+  }
+
+  const rows = matchups.map(m => {
+    if (m.teams.length < 2) return '';
+    const [ta, tb] = m.teams;
+
+    // Try id lookup; fallback to abbr/name keys if needed
+    let team1 = teamMap.get(ta.id) || teamMap.get((ta.abbr || '').toLowerCase()) || teamMap.get((ta.name || '').toLowerCase());
+    let team2 = teamMap.get(tb.id) || teamMap.get((tb.abbr || '').toLowerCase()) || teamMap.get((tb.name || '').toLowerCase());
+
+    // If not found (rare name mismatches), skip prediction
+    if (!team1 || !team2) {
+      return `
+        <div class="bg-white/6 p-3 rounded">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10">${ta.logo ? `<img src="${ta.logo}" class="w-10 h-10 object-contain rounded">` : ''}</div>
+            <div class="font-bold">${ta.name}</div>
+            <div class="text-slate-400">vs</div>
+            <div class="w-10 h-10">${tb.logo ? `<img src="${tb.logo}" class="w-10 h-10 object-contain rounded">` : ''}</div>
+            <div class="font-bold">${tb.name}</div>
+          </div>
+          <div class="text-xs text-red-300 mt-2">Could not map both teams to loaded ESPN team list; prediction skipped.</div>
+        </div>
+      `;
+    }
+
+    const { res, winner } = predictMatchup(team1, team2);
+    const winnerLogo = winner.t.logo ? `<img src="${winner.t.logo}" class="w-10 h-10 object-contain rounded">` : '';
+    const kickoff = new Date(m.date).toLocaleString();
+
+    // Mini breakdown for each side
+    const barsA = featureBars(res.team1.breakdown);
+    const barsB = featureBars(res.team2.breakdown);
+
+    return `
+      <div class="bg-white/6 p-3 rounded">
+        <div class="flex justify-between items-start">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10">${ta.logo ? `<img src="${ta.logo}" class="w-10 h-10 object-contain rounded">` : ''}</div>
+            <div class="font-bold">${team1.name}</div>
+            <div class="text-slate-400">vs</div>
+            <div class="w-10 h-10">${tb.logo ? `<img src="${tb.logo}" class="w-10 h-10 object-contain rounded">` : ''}</div>
+            <div class="font-bold">${team2.name}</div>
+          </div>
+          <div class="text-right">
+            <div class="text-xs text-slate-400">${kickoff}</div>
+            <div class="text-xs text-slate-400">${m.venue}</div>
+            <div class="mt-2 inline-flex items-center gap-2 bg-amber-300 text-slate-900 px-2 py-1 rounded">
+              <div class="w-6 h-6">${winnerLogo}</div>
+              <div class="font-bold">${winner.t.name}</div>
+              <div class="mono">${winner.pct.toFixed(1)}%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-3 mt-3">
+          <div class="bg-white/5 rounded p-2">
+            <div class="text-xs text-slate-300">Team 1 chance</div>
+            <div class="text-lg font-extrabold text-amber-300">${res.team1.chance}%</div>
+            <div class="text-xs text-slate-400">ELO ${res.team1.elo}</div>
+            <div class="mt-2 space-y-2">${barsA}</div>
+          </div>
+          <div class="bg-white/5 rounded p-2">
+            <div class="text-xs text-slate-300">Team 2 chance</div>
+            <div class="text-lg font-extrabold text-amber-300">${res.team2.chance}%</div>
+            <div class="text-xs text-slate-400">ELO ${res.team2.elo}</div>
+            <div class="mt-2 space-y-2">${barsB}</div>
+          </div>
+        </div>
+
+        <div class="text-sm text-slate-300 mt-2">Confidence: ${res.confidence.toFixed(1)}%</div>
+      </div>
+    `;
+  }).filter(Boolean);
+
+  scheduleGrid.innerHTML = rows.join('');
+}
+
+// Wire button
+loadScheduleBtn.addEventListener('click', async () => {
+  try {
+    scheduleGrid.innerHTML = '<div class="text-slate-400">Loading schedule…</div>';
+    const date = (schedDateInput?.value || '').trim();
+    const week = (schedWeekInput?.value || '').trim();
+    const matchups = await fetchScoreboard({ date, week });
+    const teamMap = buildTeamMap();
+    renderSchedulePredictions(matchups, teamMap);
+  } catch (e) {
+    scheduleGrid.innerHTML = '<div class="text-red-400">Failed to load schedule.</div>';
+    console.error(e);
+  }
+});
 
   // ---------- small helper: allow CSV paste (for debugging) ----------
   // If you want to paste a CSV into the input, clicking Load will parse it (we already wired a URL loader).
